@@ -1,11 +1,11 @@
 
 from binascii import hexlify, unhexlify
 from collections import namedtuple
-from contextlib import ExitStack, closing
+from contextlib import nullcontext
 from stat import S_ISDIR
-import os, sys, textwrap, sqlite3, time
+import os, sys, textwrap, time
 
-from bup import client, compat, git, hashsplit, rewrite, vfs
+from bup import client, compat, git, hashsplit, vfs
 from bup.compat import argv_bytes, bytes_from_byte, hexstr
 from bup.config import derive_repo_addr
 from bup.git import MissingObject, get_cat_data, parse_commit, walk_object
@@ -16,11 +16,11 @@ from bup.helpers import \
      note_error,
      parse_num,
      parse_rx_excludes,
-     temp_dir,
      tty_width)
 from bup.io import path_msg
 from bup.pwdgrp import userfullname, username
 from bup.repo import LocalRepo, make_repo
+from bup.rewrite import Rewriter
 
 
 # TODO: add --rewrite --exclude-rx* arguments, and plumb through
@@ -138,6 +138,7 @@ def parse_args(args):
     opt.ignore_missing = False
     opt.rewrite = None # None means "didn't specify"
     opt.rewrite_db = None
+    opt.rewriter = None # internal, synthetic "option"...
     opt.source = opt.remote = None
     opt.target_specs = []
 
@@ -281,11 +282,8 @@ def append_commit(src_loc, parent, src_repo, dest_repo, opt):
     root, ref, save = path
     assert isinstance(save[1], (vfs.Commit, vfs.FakeLink)), path
     assert isinstance(ref[1], vfs.RevList), path
-    return rewrite.append_save(path, parent, src_repo, dest_repo,
-                               opt.dest_split_cfg, opt.exclude_rxs,
-                               # FIXME: ...
-                               opt.rewrite_db_conn,
-                               opt.rewrite_db_mapping)
+    return opt.rewriter.append_save(path, parent, src_repo, dest_repo,
+                                    opt.exclude_rxs)
 
 
 def append_commits(src_loc, dest_hash, src_repo, dest_repo, opt):
@@ -321,12 +319,9 @@ def append_commits(src_loc, dest_hash, src_repo, dest_repo, opt):
     last_c, tree = dest_hash, None
     for commit in commits:
         coid = unhexlify(commit)
-        last_c, tree = rewrite.append_save(path + (entry_for_coid[coid],),
-                                           last_c, src_repo, dest_repo,
-                                           opt.dest_split_cfg, opt.exclude_rxs,
-                                           # FIXME: ...
-                                           opt.rewrite_db_conn,
-                                           opt.rewrite_db_mapping)
+        last_c, tree = opt.rewriter.append_save(path + (entry_for_coid[coid],),
+                                                last_c, src_repo, dest_repo,
+                                                opt.exclude_rxs)
     assert tree is not None
     return last_c, tree
 
@@ -750,27 +745,18 @@ def main(argv):
                    compression_level=opt.compress) as dest_repo:
 
         src_split_cfg = hashsplit.configuration(src_repo.config_get)
-        opt.dest_split_cfg = hashsplit.configuration(dest_repo.config_get)
+        dest_split_cfg = hashsplit.configuration(dest_repo.config_get)
 
-        if src_split_cfg != opt.dest_split_cfg and opt.rewrite is None:
+        if src_split_cfg != dest_split_cfg and opt.rewrite is None:
             misuse('repository configs differ; specify --rewrite or --no-rewrite')
         if opt.exclude_rxs and not opt.rewrite:
             misuse('cannot --exclude-rx or --exclude-rx-from when not rewriting')
 
-        ctx = ExitStack()
-        if opt.rewrite:
-            if not opt.rewrite_db:
-                rwdb_tmpdir = ctx.enter_context(temp_dir(prefix='bup-rewrite-'))
-                opt.rewrite_db = f'{rwdb_tmpdir}/db'
-            rwdb_conn = sqlite3.connect(opt.rewrite_db)
-            rwdb_conn.text_factory = bytes
-            ctx.enter_context(closing(rwdb_conn))
-            opt.rewrite_db_conn = rwdb_conn # FIXME: ...
-            with closing(rwdb_conn.cursor()) as rwdb_cur:
-                opt.rewrite_db_mapping = \
-                    rewrite.prep_mapping_table(rwdb_cur, opt.dest_split_cfg)
+        opt.rewriter = \
+            Rewriter(split_cfg=dest_split_cfg, db=opt.rewrite_db) \
+            if opt.rewrite else None
 
-        with ctx:
+        with opt.rewriter or nullcontext():
 
             # Resolve and validate all sources and destinations,
             # implicit or explicit, and do it up-front, so we can

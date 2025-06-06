@@ -223,7 +223,6 @@ def rewrite_branch(srcrepo, src, dstrepo, dst, excludes, workdb, fatal):
         split_cfg = hashsplit.configuration(dstrepo.config_get)
     except ConfigError as ex:
         fatal(ex)
-    split_trees = dstrepo.config_get(b'bup.split.trees', opttype='bool')
 
     vfs_branch = vfs.resolve(srcrepo, src)
     item = vfs_branch[-1][1]
@@ -247,7 +246,7 @@ def rewrite_branch(srcrepo, src, dstrepo, dst, excludes, workdb, fatal):
             i, n = 0, len(commits)
             for commit, (tree, timestamp) in commits:
                 i += 1
-                stack = Stack(dstrepo, split_cfg, split_trees=split_trees)
+                stack = Stack(dstrepo, split_cfg)
 
                 commit_name = commit_oid_name[unhexlify(commit)]
                 pm = f'{path_msg(src)}/{path_msg(commit_name)}'

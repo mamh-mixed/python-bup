@@ -35,6 +35,14 @@ EXIT_FAILURE = 2
 buglvl = int(os.environ.get('BUP_DEBUG', 0))
 
 
+def dict_subset(dict, keys):
+    result = {}
+    for k in keys:
+        if k in dict:
+            result[k] = dict[k]
+    return result
+
+
 nullctx = nullcontext() # only need one
 
 def nullcontext_if_not(manager):
